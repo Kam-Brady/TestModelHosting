@@ -13,14 +13,38 @@ import os
 app = FastAPI(title="YOLOv8 API", description="API for object detection using YOLOv8")
 
 # Initialize the YOLO model
-@app.on_event("startup")
-async def startup_event():
+# Global variable for model
+model = None
+
+# Initialize model at module level
+def initialize_model():
     global model
     try:
+        print("Attempting to load YOLO model...")
         model = YOLO("yolov8n.pt")
-        print("Model loaded successfully")
+        print("Model loaded successfully!")
+        return True
     except Exception as e:
         print(f"Error loading model: {e}")
+        return False
+
+# Try to initialize immediately
+model_initialized = initialize_model()
+
+@app.on_event("startup")
+async def startup_event():
+    global model, model_initialized
+    print("API starting up")
+    
+    # If model initialization failed earlier, try again
+    if not model_initialized:
+        print("Attempting to initialize model again during startup...")
+        model_initialized = initialize_model()
+        
+    if model_initialized:
+        print("Model is ready to use")
+    else:
+        print("WARNING: Model failed to initialize, API may not function correctly")
 
 @app.get("/")
 async def root():
@@ -34,11 +58,30 @@ async def test():
 @app.post("/detect")
 async def detect_objects(file: UploadFile = File(...)):
     try:
+        # Check if model is loaded
+        global model
+        if model is None:
+            # Try one more time to load the model
+            print("Model not loaded. Attempting to load now...")
+            if initialize_model():
+                print("Model loaded successfully on demand")
+            else:
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": "Model could not be loaded. Please check server logs."}
+                )
+            
         # Read the uploaded image
         contents = await file.read()
         
         # Convert to OpenCV format
-        image = np.array(Image.open(io.BytesIO(contents)))
+        try:
+            image = np.array(Image.open(io.BytesIO(contents)))
+        except Exception as img_error:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": f"Invalid image format: {str(img_error)}"}
+            )
         
         # Run detection
         start_time = time.time()
@@ -71,6 +114,9 @@ async def detect_objects(file: UploadFile = File(...)):
         return JSONResponse(content=response)
     
     except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"Error in detect_objects: {error_detail}")
         return JSONResponse(
             status_code=500,
             content={"success": False, "error": str(e)}
